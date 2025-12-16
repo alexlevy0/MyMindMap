@@ -233,11 +233,21 @@ const DraggableNode = ({
 };
 
 // ============================================
+// CONSTANTES DE STOCKAGE
+// ============================================
+
+const STORAGE_KEYS = {
+  TREE_DATA: 'mindmap_tree_data',
+  NODE_POSITIONS: 'mindmap_node_positions',
+  CANVAS_STATE: 'mindmap_canvas_state',
+};
+
+// ============================================
 // COMPOSANT PRINCIPAL : MINDMAPAPP
 // ============================================
 
 export default function MindMapApp() {
-  // Données de l'arbre
+  // Données par défaut de l'arbre
   const defaultData = {
     id: 'root',
     label: 'Idée Centrale',
@@ -271,11 +281,40 @@ export default function MindMapApp() {
     ]
   };
 
-  const [treeData, setTreeData] = useState(defaultData);
-  const [nodePositions, setNodePositions] = useState(() => calculateInitialPositions(defaultData));
+  // ============================================
+  // CHARGEMENT INITIAL DEPUIS LOCALSTORAGE
+  // ============================================
+  
+  const loadFromStorage = (key, fallback) => {
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.warn(`Erreur de chargement localStorage (${key}):`, e);
+    }
+    return fallback;
+  };
+
+  const [treeData, setTreeData] = useState(() => 
+    loadFromStorage(STORAGE_KEYS.TREE_DATA, defaultData)
+  );
+  
+  const [nodePositions, setNodePositions] = useState(() => {
+    const savedPositions = loadFromStorage(STORAGE_KEYS.NODE_POSITIONS, null);
+    if (savedPositions) return savedPositions;
+    // Si pas de positions sauvegardées, calculer depuis l'arbre chargé
+    const savedTree = loadFromStorage(STORAGE_KEYS.TREE_DATA, defaultData);
+    return calculateInitialPositions(savedTree);
+  });
   
   // État du canvas (pan & zoom)
-  const [scale, setScale] = useState(0.9);
+  const [scale, setScale] = useState(() => {
+    const saved = loadFromStorage(STORAGE_KEYS.CANVAS_STATE, null);
+    return saved?.scale ?? 0.9;
+  });
+  
   const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
@@ -284,17 +323,64 @@ export default function MindMapApp() {
   const [draggingNodeId, setDraggingNodeId] = useState(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   
+  // Flag pour savoir si le canvas a été initialisé
+  const [isInitialized, setIsInitialized] = useState(false);
+  
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Centrer le canvas au chargement
+  // ============================================
+  // SAUVEGARDE AUTOMATIQUE DANS LOCALSTORAGE
+  // ============================================
+  
+  // Sauvegarder l'arbre quand il change
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREE_DATA, JSON.stringify(treeData));
+    } catch (e) {
+      console.warn('Erreur de sauvegarde arbre:', e);
+    }
+  }, [treeData]);
+  
+  // Sauvegarder les positions quand elles changent
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.NODE_POSITIONS, JSON.stringify(nodePositions));
+    } catch (e) {
+      console.warn('Erreur de sauvegarde positions:', e);
+    }
+  }, [nodePositions]);
+  
+  // Sauvegarder l'état du canvas (scale + offset) quand il change
+  useEffect(() => {
+    if (!isInitialized) return; // Ne pas sauvegarder avant l'initialisation
+    try {
+      localStorage.setItem(STORAGE_KEYS.CANVAS_STATE, JSON.stringify({
+        scale,
+        canvasOffset
+      }));
+    } catch (e) {
+      console.warn('Erreur de sauvegarde canvas:', e);
+    }
+  }, [scale, canvasOffset, isInitialized]);
+
+  // Initialiser le canvas (centrer ou restaurer la position)
   useEffect(() => {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      setCanvasOffset({ 
-        x: rect.width / 2, 
-        y: rect.height / 2 
-      });
+      const savedState = loadFromStorage(STORAGE_KEYS.CANVAS_STATE, null);
+      
+      if (savedState?.canvasOffset) {
+        // Restaurer la position sauvegardée
+        setCanvasOffset(savedState.canvasOffset);
+      } else {
+        // Centrer par défaut
+        setCanvasOffset({ 
+          x: rect.width / 2, 
+          y: rect.height / 2 
+        });
+      }
+      setIsInitialized(true);
     }
   }, []);
 
@@ -394,6 +480,16 @@ export default function MindMapApp() {
 
   const resetMap = () => {
     if (window.confirm("Réinitialiser la carte ? Toutes les modifications seront perdues.")) {
+      // Effacer le localStorage
+      try {
+        localStorage.removeItem(STORAGE_KEYS.TREE_DATA);
+        localStorage.removeItem(STORAGE_KEYS.NODE_POSITIONS);
+        localStorage.removeItem(STORAGE_KEYS.CANVAS_STATE);
+      } catch (e) {
+        console.warn('Erreur lors de la suppression du localStorage:', e);
+      }
+      
+      // Réinitialiser les états
       setTreeData(defaultData);
       setNodePositions(calculateInitialPositions(defaultData));
       setScale(0.9);
@@ -517,7 +613,10 @@ export default function MindMapApp() {
             <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
               MindMap Draggable
             </h1>
-            <p className="text-xs text-slate-500">Glissez les nœuds pour les repositionner</p>
+            <p className="text-xs text-slate-500 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
+              Sauvegarde automatique activée
+            </p>
           </div>
         </div>
 
@@ -636,6 +735,7 @@ export default function MindMapApp() {
           <li>• <span className="text-blue-300">Glissez</span> un nœud pour le déplacer</li>
           <li>• <span className="text-green-300">+</span> ajoute un enfant</li>
           <li>• Les lignes suivent automatiquement</li>
+          <li>• <span className="text-emerald-300">💾 Auto-save</span> : vos données persistent</li>
         </ul>
       </div>
 
