@@ -17,5 +17,5 @@ export default defineConfig({
     // ⚠️ Change le dossier de sortie de 'dist' à 'docs'
     outDir: 'docs' 
   },
-  base: '/mymindmap/',
+  base: './',
 })
