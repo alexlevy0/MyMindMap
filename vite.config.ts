@@ -13,4 +13,8 @@ export default defineConfig({
     }),
     tailwindcss(),
   ],
+  build: {
+    // ⚠️ Change le dossier de sortie de 'dist' à 'docs'
+    outDir: 'docs' 
+  },
 })
