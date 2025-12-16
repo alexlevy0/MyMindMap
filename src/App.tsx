@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Plus, Trash2, RotateCcw, ZoomIn, ZoomOut, Move, Grip } from 'lucide-react';
+import { Plus, Trash2, RotateCcw, ZoomIn, ZoomOut, Move, Grip, Share2, Check, Link } from 'lucide-react';
 
 // ============================================
 // CONSTANTES POUR LE LAYOUT
@@ -13,6 +13,78 @@ const RADIUS_LEVEL_1 = 250;
 const SUB_BRANCH_RADIUS = 140;
 const FAN_ANGLE_SPREAD = Math.PI / 2;
 const MAX_FAN_ANGLE_STEP = Math.PI / 6;
+
+// ============================================
+// UTILITAIRES DE COMPRESSION URL
+// ============================================
+
+// Compression simple avec LZString-like encoding (version légère)
+const compressToURL = (data) => {
+  try {
+    const jsonStr = JSON.stringify(data);
+    // Encoder en base64 URL-safe
+    const base64 = btoa(unescape(encodeURIComponent(jsonStr)))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    return base64;
+  } catch (e) {
+    console.warn('Erreur compression:', e);
+    return null;
+  }
+};
+
+const decompressFromURL = (compressed) => {
+  try {
+    // Restaurer le base64 standard
+    let base64 = compressed.replace(/-/g, '+').replace(/_/g, '/');
+    // Ajouter le padding si nécessaire
+    while (base64.length % 4) base64 += '=';
+    const jsonStr = decodeURIComponent(escape(atob(base64)));
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.warn('Erreur décompression:', e);
+    return null;
+  }
+};
+
+// Lire les données depuis l'URL (hash)
+const getDataFromURL = () => {
+  try {
+    const hash = window.location.hash.slice(1); // Enlever le #
+    if (!hash) return null;
+    
+    const params = new URLSearchParams(hash);
+    const encoded = params.get('data');
+    if (!encoded) return null;
+    
+    return decompressFromURL(encoded);
+  } catch (e) {
+    console.warn('Erreur lecture URL:', e);
+    return null;
+  }
+};
+
+// Écrire les données dans l'URL (hash) sans recharger
+const setDataToURL = (data) => {
+  try {
+    const compressed = compressToURL(data);
+    if (compressed) {
+      const newHash = `#data=${compressed}`;
+      // Mettre à jour sans déclencher de navigation
+      window.history.replaceState(null, '', newHash);
+    }
+  } catch (e) {
+    console.warn('Erreur écriture URL:', e);
+  }
+};
+
+// Générer l'URL de partage complète
+const generateShareURL = (data) => {
+  const compressed = compressToURL(data);
+  if (!compressed) return null;
+  return `${window.location.origin}${window.location.pathname}#data=${compressed}`;
+};
 
 // ============================================
 // UTILITAIRES
@@ -282,7 +354,7 @@ export default function MindMapApp() {
   };
 
   // ============================================
-  // CHARGEMENT INITIAL DEPUIS LOCALSTORAGE
+  // CHARGEMENT INITIAL : URL > LOCALSTORAGE > DÉFAUT
   // ============================================
   
   const loadFromStorage = (key, fallback) => {
@@ -297,20 +369,25 @@ export default function MindMapApp() {
     return fallback;
   };
 
-  const [treeData, setTreeData] = useState(() => 
-    loadFromStorage(STORAGE_KEYS.TREE_DATA, defaultData)
-  );
+  // Charger depuis l'URL en priorité
+  const urlData = getDataFromURL();
+  
+  const [treeData, setTreeData] = useState(() => {
+    if (urlData?.tree) return urlData.tree;
+    return loadFromStorage(STORAGE_KEYS.TREE_DATA, defaultData);
+  });
   
   const [nodePositions, setNodePositions] = useState(() => {
+    if (urlData?.positions) return urlData.positions;
     const savedPositions = loadFromStorage(STORAGE_KEYS.NODE_POSITIONS, null);
     if (savedPositions) return savedPositions;
-    // Si pas de positions sauvegardées, calculer depuis l'arbre chargé
     const savedTree = loadFromStorage(STORAGE_KEYS.TREE_DATA, defaultData);
     return calculateInitialPositions(savedTree);
   });
   
   // État du canvas (pan & zoom)
   const [scale, setScale] = useState(() => {
+    if (urlData?.canvas?.scale) return urlData.canvas.scale;
     const saved = loadFromStorage(STORAGE_KEYS.CANVAS_STATE, null);
     return saved?.scale ?? 0.9;
   });
@@ -326,11 +403,14 @@ export default function MindMapApp() {
   // Flag pour savoir si le canvas a été initialisé
   const [isInitialized, setIsInitialized] = useState(false);
   
+  // État pour le bouton de partage
+  const [shareStatus, setShareStatus] = useState('idle'); // 'idle' | 'copied' | 'error'
+  
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
 
   // ============================================
-  // SAUVEGARDE AUTOMATIQUE DANS LOCALSTORAGE
+  // SAUVEGARDE AUTOMATIQUE DANS LOCALSTORAGE + URL
   // ============================================
   
   // Sauvegarder l'arbre quand il change
@@ -364,13 +444,31 @@ export default function MindMapApp() {
     }
   }, [scale, canvasOffset, isInitialized]);
 
+  // Synchroniser vers l'URL (debounced pour éviter trop de mises à jour)
+  useEffect(() => {
+    if (!isInitialized) return;
+    
+    const timeoutId = setTimeout(() => {
+      setDataToURL({
+        tree: treeData,
+        positions: nodePositions,
+        canvas: { scale }
+      });
+    }, 500); // Debounce de 500ms
+    
+    return () => clearTimeout(timeoutId);
+  }, [treeData, nodePositions, scale, isInitialized]);
+
   // Initialiser le canvas (centrer ou restaurer la position)
   useEffect(() => {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       const savedState = loadFromStorage(STORAGE_KEYS.CANVAS_STATE, null);
       
-      if (savedState?.canvasOffset) {
+      if (urlData?.canvas?.canvasOffset) {
+        // Restaurer depuis l'URL
+        setCanvasOffset(urlData.canvas.canvasOffset);
+      } else if (savedState?.canvasOffset) {
         // Restaurer la position sauvegardée
         setCanvasOffset(savedState.canvasOffset);
       } else {
@@ -383,6 +481,45 @@ export default function MindMapApp() {
       setIsInitialized(true);
     }
   }, []);
+
+  // ============================================
+  // FONCTION DE PARTAGE
+  // ============================================
+  
+  const handleShare = useCallback(async () => {
+    const shareData = {
+      tree: treeData,
+      positions: nodePositions,
+      canvas: { scale }
+    };
+    
+    const url = generateShareURL(shareData);
+    if (!url) {
+      setShareStatus('error');
+      setTimeout(() => setShareStatus('idle'), 2000);
+      return;
+    }
+    
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareStatus('copied');
+      setTimeout(() => setShareStatus('idle'), 2000);
+    } catch (e) {
+      // Fallback pour les navigateurs sans API clipboard
+      const textArea = document.createElement('textarea');
+      textArea.value = url;
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        setShareStatus('copied');
+      } catch (e2) {
+        setShareStatus('error');
+      }
+      document.body.removeChild(textArea);
+      setTimeout(() => setShareStatus('idle'), 2000);
+    }
+  }, [treeData, nodePositions, scale]);
 
   // ============================================
   // GESTION DE L'ARBRE (CRUD)
@@ -488,6 +625,9 @@ export default function MindMapApp() {
       } catch (e) {
         console.warn('Erreur lors de la suppression du localStorage:', e);
       }
+      
+      // Effacer le hash de l'URL
+      window.history.replaceState(null, '', window.location.pathname);
       
       // Réinitialiser les états
       setTreeData(defaultData);
@@ -615,7 +755,7 @@ export default function MindMapApp() {
             </h1>
             <p className="text-xs text-slate-500 flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
-              Sauvegarde automatique activée
+              Sync auto • Partageable par URL
             </p>
           </div>
         </div>
@@ -648,6 +788,40 @@ export default function MindMapApp() {
               <ZoomIn size={16} />
             </button>
           </div>
+          
+          <div className="h-8 w-px bg-slate-600" />
+          
+          {/* Bouton de partage */}
+          <button
+            onClick={handleShare}
+            className={`
+              flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all duration-200 text-sm
+              ${shareStatus === 'copied' 
+                ? 'bg-green-500/20 text-green-400' 
+                : shareStatus === 'error'
+                ? 'bg-red-500/20 text-red-400'
+                : 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30'
+              }
+            `}
+            title="Copier le lien de partage"
+          >
+            {shareStatus === 'copied' ? (
+              <>
+                <Check size={14} />
+                <span className="hidden sm:inline">Copié !</span>
+              </>
+            ) : shareStatus === 'error' ? (
+              <>
+                <Link size={14} />
+                <span className="hidden sm:inline">Erreur</span>
+              </>
+            ) : (
+              <>
+                <Share2 size={14} />
+                <span className="hidden sm:inline">Partager</span>
+              </>
+            )}
+          </button>
           
           <button
             onClick={resetMap}
@@ -729,13 +903,13 @@ export default function MindMapApp() {
       <div className="absolute bottom-4 right-4 bg-slate-800/90 backdrop-blur-sm p-4 rounded-xl shadow-2xl border border-slate-700 max-w-xs pointer-events-none z-40">
         <h3 className="font-semibold mb-2 text-slate-200 text-sm flex items-center gap-2">
           <Grip size={14} className="text-blue-400" />
-          Drag & Drop activé
+          Contrôles
         </h3>
         <ul className="space-y-1.5 text-slate-400 text-xs">
           <li>• <span className="text-blue-300">Glissez</span> un nœud pour le déplacer</li>
           <li>• <span className="text-green-300">+</span> ajoute un enfant</li>
-          <li>• Les lignes suivent automatiquement</li>
-          <li>• <span className="text-emerald-300">💾 Auto-save</span> : vos données persistent</li>
+          <li>• <span className="text-purple-300">Partager</span> copie l'URL complète</li>
+          <li>• <span className="text-emerald-300">💾</span> Sauvegarde auto (local + URL)</li>
         </ul>
       </div>
 
